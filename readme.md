@@ -1,4 +1,4 @@
-# CoSteer: COLLABORATIVE DECODING-TIME PER-SONALIZATION VIA LOCAL DELTA STEERING
+# CoSteer: Collaborative Decoding-Time Personalization via Local Delta Steering
 
 This repository contains the implementation and datasets for our manuscipt. Our work introduces **CoSteer**, a framework for enabling a powerful, remote large language model (LLM) to be guided by a smaller, local language model (SLM) that has access to private user context, without compromising data privacy.
 
@@ -11,16 +11,6 @@ This repository provides the necessary resources to reproduce the experiments an
 * **Efficient CoSteer (AdaCoSteer)**: An adaptive variant of CoSteer designed to reduce communication cost for faster inference.
 
 ## Repository Structure
-.
-├── datasets/
-│   ├── abstract.jsonl
-│   ├── review.jsonl
-│   └── writing.jsonl
-└── codes/
-├── abstract_costeer.py
-├── abstract_costeer_map.py
-├── abstract_costeer_byte.py
-└── abstract_adacosteer.py
 
 ### Datasets
 
