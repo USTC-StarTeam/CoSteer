@@ -6,10 +6,11 @@ import argparse
 import os
 
 # ==========================================================================
-# §1. 新增：Byte-level Greedy 解码技术相关辅助函数和类
+# §1. New: Helper Functions and Class for Byte-level Greedy Decoding
 # ==========================================================================
 
 def _bytes_to_unicode():
+    """Returns a mapping from bytes to unicode characters."""
     bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
     cs = bs[:]
     n = 0
@@ -19,10 +20,12 @@ def _bytes_to_unicode():
     return dict(zip(bs, map(chr, cs)))
 
 def _build_unicode_to_bytes():
+    """Builds a reverse mapping from unicode to bytes."""
     b2u = _bytes_to_unicode()
     return {u: b for b, u in b2u.items()}
 
 def _token_id_to_bytes(tokenizer, tid, u2b=None):
+    """Converts a token ID to its byte representation."""
     if tid in set(tokenizer.all_special_ids or []):
         return None
     tok = tokenizer.convert_ids_to_tokens(int(tid), skip_special_tokens=False)
@@ -42,6 +45,7 @@ def _token_id_to_bytes(tokenizer, tid, u2b=None):
         return s.encode("utf-8")
 
 def _scatter_logsumexp(values: torch.Tensor, buckets: torch.Tensor, dim_size: int = 257) -> torch.Tensor:
+    """Performs a scatter log-sum-exp operation."""
     assert buckets.dtype == torch.long
     v = values
     device, dtype = v.device, v.dtype
@@ -56,6 +60,7 @@ def _scatter_logsumexp(values: torch.Tensor, buckets: torch.Tensor, dim_size: in
     return m + torch.log(torch.clamp(s, min=eps))
 
 class ByteGreedyHelper:
+    """Helper class for byte-level greedy decoding."""
     def __init__(self, tokenizer, vocab_size, device, allow_special=True, debug=False):
         self.tok = tokenizer
         self.vocab_size = int(vocab_size)
@@ -72,11 +77,12 @@ class ByteGreedyHelper:
         self._kth_byte_cache = {}
 
     def _kth_bytes(self, k: int) -> torch.Tensor:
+        """Gets the k-th byte for all tokens in the vocabulary."""
         t = self._kth_byte_cache.get(k)
         if t is not None:
             return t
         vec = torch.full((self.vocab_size,), 256, dtype=torch.long)
-        for tid, b in enumerate(self._tok_bytes):
+        for tid, b in enumerate(self.tok_bytes):
             if b is not None and k < len(b):
                 vec[tid] = b[k]
         vec = vec.to(self.device)
@@ -84,11 +90,13 @@ class ByteGreedyHelper:
         return vec
 
     def _tok_str(self, tid: int) -> str:
+        """Converts a token ID to its string representation."""
         s = self.tok.convert_ids_to_tokens(int(tid), skip_special_tokens=False)
         return s if s is not None else self.tok.decode([int(tid)], skip_special_tokens=False)
 
     @torch.inference_mode()
     def pick_token_ids(self, logprobs_last: torch.Tensor, eos_token_id=None, *, step_idx=None) -> torch.Tensor:
+        """Picks the next token ID using byte-level greedy decoding."""
         lp = logprobs_last if logprobs_last.dim() == 2 else logprobs_last.unsqueeze(0)
         B, V = lp.shape
         assert V == self.vocab_size
@@ -120,7 +128,7 @@ class ByteGreedyHelper:
                     out.append(chosen)
                     if self.debug:
                         tstr = self._tok_str(chosen)
-                        print(f"  [k={k}] choose END  -> tid={chosen} tok={tstr!r} reason={reason}")
+                        print(f"  [k={k}] choose END   -> tid={chosen} tok={tstr!r} reason={reason}")
                     break
                 else:
                     keep = (kb == b_star)
@@ -139,7 +147,7 @@ class ByteGreedyHelper:
         return torch.tensor(out, device=lp.device, dtype=torch.long)
 
 # ==========================================================================
-# §2. 原有代码结构
+# §2. Main Code Structure
 # ==========================================================================
 
 class CosteerGenerator:
@@ -162,16 +170,16 @@ class CosteerGenerator:
         for cur_iter in range(1, self.iteration_num + 1):
             log_player_mem[:, cur_iter - 1] = log_player.detach()
             Q[:, cur_iter] = self.alpha * (log_player - log_ref) + self.beta * (slm_with_logits - slm_wo_logits)
-            term1 = (cur_iter) * self.player_lambda * log_players_0
-            term2 = torch.sum(Q[:, 0:cur_iter + 1], dim=1)
-            term3 = log_player_mem[:, cur_iter - 1] / (self.eta)
-            denominator = cur_iter * self.player_lambda + 1 / (self.eta)
+            term1 = cur_iter * self.player_lambda * log_players_0
+            term2 = torch.sum(Q[:, :cur_iter + 1], dim=1)
+            term3 = log_player_mem[:, cur_iter - 1] / self.eta
+            denominator = cur_iter * self.player_lambda + 1 / self.eta
             log_player = (term1 + term2 + term3) / denominator
             log_player = torch.log_softmax(log_player, dim=-1)
         return log_player
 
 def load_models(args):
-    """加载模型和分词器"""
+    """Load models and tokenizers."""
     LLM_model = AutoModelForCausalLM.from_pretrained(
         args.llm_model_name,
         torch_dtype="auto",
@@ -190,7 +198,7 @@ def load_models(args):
 
 def create_vocab_intersection_map(llm_tokenizer, slm_tokenizer, device):
     """
-    创建 LLM 和 SLM 词汇表的交集，并返回对齐的 token ID 张量。
+    Creates the vocabulary intersection of the LLM and SLM, and returns aligned token ID tensors.
     """
     print("Creating vocabulary intersection map...")
     llm_vocab = llm_tokenizer.get_vocab()
@@ -211,6 +219,7 @@ def create_vocab_intersection_map(llm_tokenizer, slm_tokenizer, device):
     return llm_intersect_ids, slm_intersect_ids
 
 def make_top_5_prompt(query, top_5):
+    """Creates a prompt with the top 5 documents as context."""
     prompt_parts = ["The following are five titles with their abstracts."]
     items_to_use = top_5[:5]
     for i, item in enumerate(items_to_use):
@@ -220,15 +229,15 @@ def make_top_5_prompt(query, top_5):
     return "\n".join(prompt_parts)
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++
-# +++ 重大修改：generate_response 函数以使用 Byte-level Greedy +++
+# +++ Major Change: generate_response updated for Byte-level Greedy +++
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++
 def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer, 
                       llm_intersect_ids, slm_intersect_ids, llm_id_to_slm_id, byte_picker, args):
-    """处理单个item的生成"""
+    """Handles the generation for a single item."""
     messages_wo = [{"role": "system", "content": "You are a helpful assistant."},
-                 {"role": "user", "content": query_wo}]
+                   {"role": "user", "content": query_wo}]
     messages_with = [{"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": query_with}]
+                     {"role": "user", "content": query_with}]
 
     llm_text_wo = LLM_tokenizer.apply_chat_template(
         messages_wo, tokenize=False, add_generation_prompt=True)
@@ -247,7 +256,7 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
     slm_seq_with = slm_inputs_with.input_ids
 
     costeer_optimizer = CosteerGenerator(T=args.T, alpha=args.alpha, beta=args.beta, 
-                                      player_lambda=args.player_lambda, eta=args.eta)
+                                         player_lambda=args.player_lambda, eta=args.eta)
     
     for _ in range(max_new_tokens):
         with torch.no_grad():
@@ -256,13 +265,13 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
             llm_logits_native = LLM_model(llm_seq).logits[:, -1, :]
 
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # +++ 新增：强制停止机制 (Forced Stop Mechanism)
+        # +++ New: Forced Stop Mechanism
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # 在进入Costeer和Byte-level解码前，先检查原始SLM with context的停止意图
+        # Before Costeer and byte-level decoding, check the original SLM's stopping intention.
         slm_with_probs = torch.softmax(slm_with_logits_native, dim=-1)
         slm_with_eos_prob = slm_with_probs[0, SLM_tokenizer.eos_token_id]
         
-        # 如果SLM with context 输出EOS的概率超过设定的阈值，则直接中断生成
+        # If SLM with context has a high probability of generating EOS, stop generation.
         if slm_with_eos_prob.item() > args.eos_force_threshold:
             print(f"\nINFO: SLM_with EOS probability ({slm_with_eos_prob.item():.4f}) exceeded threshold ({args.eos_force_threshold}). Forcing generation to stop.")
             break
@@ -276,8 +285,8 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
             intersect_logits_llm, intersect_logits_slm_wo, intersect_logits_slm_with
         )
         
-        # --- Byte-level Greedy 解码 ---
-        # 1. 将优化后的交集 logits 扩展回 LLM 的完整词表空间
+        # --- Byte-level Greedy Decoding ---
+        # 1. Expand the optimized intersection logits back to the LLM's full vocabulary space.
         full_llm_logits = torch.full(
             (1, LLM_model.config.vocab_size), 
             float('-inf'), 
@@ -287,17 +296,17 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
         full_llm_logits.scatter_(-1, llm_intersect_ids.unsqueeze(0), combined_logits)
         full_llm_logprobs = F.log_softmax(full_llm_logits, dim=-1)
 
-        # 2. 使用 Byte-level Greedy 选择器选择 token
+        # 2. Use the Byte-level Greedy picker to select the next token.
         next_llm_token = byte_picker.pick_token_ids(
             full_llm_logprobs, 
             eos_token_id=LLM_tokenizer.eos_token_id
         ).squeeze()
 
-        # 3. 反向映射，检查 token 是否对 SLM 有效
+        # 3. Reverse map to check if the token is valid for the SLM.
         next_slm_token_id = llm_id_to_slm_id.get(next_llm_token.item())
         
         if next_slm_token_id is None:
-            # 如果选出的 token 不在交集中，无法在 SLM 中继续，终止生成
+            # If the chosen token is not in the intersection, stop generation.
             print(f"Warning: Byte-greedy chose LLM token {next_llm_token.item()} ('{LLM_tokenizer.decode(next_llm_token)}') which is not in the SLM's vocabulary. Stopping generation.")
             break
             
@@ -307,7 +316,7 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
         slm_seq_wo = torch.cat((slm_seq_wo, next_slm_token), dim=1)
         slm_seq_with = torch.cat((slm_seq_with, next_slm_token), dim=1)
 
-        # 保留原有的停止条件作为备用
+        # Keep the original stopping condition as a fallback.
         if next_llm_token.item() == LLM_tokenizer.eos_token_id:
             break
 
@@ -319,59 +328,61 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
     return generated_text
 
 def read_json_and_extract_info(args):
+    """Reads input, generates responses, and writes to output, with resume capability."""
     LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer = load_models(args)
     
     llm_intersect_ids, slm_intersect_ids = create_vocab_intersection_map(LLM_tokenizer, SLM_tokenizer, LLM_model.device)
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # +++ 修改：使用 'input' 作为唯一标识来实现断点续跑 +++
+    # +++ Change: Use 'input' as a unique ID to resume from a checkpoint +++
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     processed_inputs = set()
-    # 检查输出文件是否存在，如果存在则加载已处理的 'input' 内容
+    # Check if output file exists, if so, load already processed 'input' content.
     if os.path.exists(args.output_file):
-        print(f"发现已存在的输出文件: {args.output_file}。正在加载已处理的 'input'...")
+        print(f"Found existing output file: {args.output_file}. Loading processed 'input' entries...")
         with open(args.output_file, 'r', encoding='utf-8') as f_out:
             for line in f_out:
                 try:
                     processed_item = json.loads(line)
-                    # 将 'input' 字段的内容加入 set 中
+                    # Add the 'input' field content to the set.
                     if 'input' in processed_item:
                         processed_inputs.add(processed_item['input'])
                 except json.JSONDecodeError:
-                    print(f"警告：输出文件中有一行无法解析，已跳过: {line.strip()}")
-        print(f"加载完成，共找到 {len(processed_inputs)} 个已处理的 'input'。现在开始继续任务...")
+                    print(f"Warning: A line in the output file could not be parsed and was skipped: {line.strip()}")
+        print(f"Loading complete. Found {len(processed_inputs)} processed 'input' entries. Resuming task...")
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # +++                     修改结束                       +++
+    # +++                   End of Changes                     +++
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # +++ 新增：初始化 Byte-level Greedy 解码器和反向映射表 +++
+    
+    # +++ New: Initialize Byte-level Greedy decoder and reverse mapping table +++
     byte_picker = ByteGreedyHelper(
         tokenizer=LLM_tokenizer,
         vocab_size=LLM_model.config.vocab_size,
         device=LLM_model.device,
-        debug=False # 可设为 True 以查看详细解码过程
+        debug=False # Can be set to True for detailed decoding process
     )
     llm_id_to_slm_id = {llm_id.item(): slm_id.item() for llm_id, slm_id in zip(llm_intersect_ids, slm_intersect_ids)}
 
     with open(args.input_file, 'r', encoding='utf-8') as file:
         for line in file:
             item = json.loads(line)
-            id = item.get('id')
-            input = item.get('input')
-            if input in processed_inputs:
-                # 为了日志整洁，可以只打印 input 的前缀
-                print(f"Input: '{input[:70]}...' 已处理，跳过。")
-                continue # 跳到下一个循环
+            item_id = item.get('id')
+            user_input = item.get('input')
+            if user_input in processed_inputs:
+                # For cleaner logs, print only the input prefix.
+                print(f"Input: '{user_input[:70]}...' already processed, skipping.")
+                continue # Skip to the next iteration
             top_5 = item.get('top_5')
-            prompt_wo_user_profile = input
-            prompt_with_user_profile = make_top_5_prompt(input, top_5)
+            prompt_wo_user_profile = user_input
+            prompt_with_user_profile = make_top_5_prompt(user_input, top_5)
             
             response = generate_response(prompt_wo_user_profile, prompt_with_user_profile, 
-                                        LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer,
-                                        llm_intersect_ids, slm_intersect_ids, 
-                                        llm_id_to_slm_id, byte_picker, args)
+                                           LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer,
+                                           llm_intersect_ids, slm_intersect_ids, 
+                                           llm_id_to_slm_id, byte_picker, args)
             
             new_json = {
-                "id": id,
-                'input': input,
+                "id": item_id,
+                'input': user_input,
                 'response': response,
             }
             with open(args.output_file, 'a', encoding='utf-8') as output_file:
@@ -379,6 +390,7 @@ def read_json_and_extract_info(args):
                 output_file.write('\n')
 
 def parse_args():
+    """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Costeer Generator with hyperparameters")
     parser.add_argument("--T", type=int, default=20, help="Number of iterations")
     parser.add_argument("--alpha", type=float, default=2, help="Alpha parameter")
