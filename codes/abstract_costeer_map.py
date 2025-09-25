@@ -14,34 +14,34 @@ class CosteerGenerator:
         self.eta = eta
         
     def optimize_policy(self, llm_logits, slm_wo_logits, slm_with_logits):
-        # 维度对齐
+        # Align dimensions
         batch_size, vocab_size = llm_logits.shape
         
-        # === 变量初始化 ===
-        log_player = torch.log_softmax(llm_logits, dim=-1)  # [batch, vocab]
-        log_ref = torch.log_softmax(llm_logits, dim=-1)    # [batch, vocab]
+        # === Variable Initialization ===
+        log_player = torch.log_softmax(llm_logits, dim=-1)      # [batch, vocab]
+        log_ref = torch.log_softmax(llm_logits, dim=-1)        # [batch, vocab]
         
         slm_with_logits = torch.log_softmax(slm_with_logits, dim=-1)  # [batch, vocab]
-        slm_wo_logits = torch.log_softmax(slm_wo_logits, dim=-1)    # [batch, vocab]
+        slm_wo_logits = torch.log_softmax(slm_wo_logits, dim=-1)      # [batch, vocab]
         
         Q = torch.zeros((batch_size, self.iteration_num + 1, vocab_size), 
-                    device=llm_logits.device)
+                        device=llm_logits.device)
         
-        log_players_0 = log_player.clone()  # 初始策略记忆体
+        log_players_0 = log_player.clone()  # Initial policy memory
         
-        log_player_mem = torch.zeros_like(Q)  # 策略记忆体
+        log_player_mem = torch.zeros_like(Q)  # Policy memory buffer
         
-        # === 迭代优化 ===
-        for cur_iter in range(1, self.iteration_num+1):
-            log_player_mem[:, cur_iter-1] = log_player.detach()
+        # === Iterative Optimization ===
+        for cur_iter in range(1, self.iteration_num + 1):
+            log_player_mem[:, cur_iter - 1] = log_player.detach()
             Q[:, cur_iter] = self.alpha * (log_player - log_ref) + self.beta * (slm_with_logits - slm_wo_logits)
             
-            # 策略更新公式
-            term1 = (cur_iter) * self.player_lambda * log_players_0
-            term2 = torch.sum(Q[:, 0:cur_iter+1], dim=1)
-            term3 = log_player_mem[:, cur_iter-1] / (self.eta)
+            # Policy update formula
+            term1 = cur_iter * self.player_lambda * log_players_0
+            term2 = torch.sum(Q[:, :cur_iter + 1], dim=1)
+            term3 = log_player_mem[:, cur_iter - 1] / self.eta
             
-            denominator = cur_iter * self.player_lambda + 1/(self.eta)
+            denominator = cur_iter * self.player_lambda + 1 / self.eta
 
             log_player = (term1 + term2 + term3) / denominator
             
@@ -50,7 +50,7 @@ class CosteerGenerator:
         return log_player
 
 def load_models(args):
-    """加载模型和分词器"""
+    """Load models and tokenizers."""
     LLM_model = AutoModelForCausalLM.from_pretrained(
         args.llm_model_name,
         torch_dtype="auto",
@@ -71,18 +71,18 @@ def load_models(args):
     
     return LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer
 
-# +++++++++++++++++++++++++++++++++++++++++++++
-# +++ 修改：采用词表交集方式构建映射 +++
-# +++++++++++++++++++++++++++++++++++++++++++++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ Change: Build mapping using vocabulary intersection +++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++
 def create_vocab_intersection_map(llm_tokenizer, slm_tokenizer, device):
     """
-    创建 LLM 和 SLM 词汇表的交集，并返回对齐的 token ID 张量。
+    Creates the vocabulary intersection of the LLM and SLM, and returns aligned token ID tensors.
     """
     print("Creating vocabulary intersection map...")
     llm_vocab = llm_tokenizer.get_vocab()
     slm_vocab = slm_tokenizer.get_vocab()
 
-    # 寻找共同的 token 字符串
+    # Find common token strings
     llm_tokens = set(llm_vocab.keys())
     slm_tokens = set(slm_vocab.keys())
     intersect_tokens = llm_tokens.intersection(slm_tokens)
@@ -91,21 +91,22 @@ def create_vocab_intersection_map(llm_tokenizer, slm_tokenizer, device):
     print(f"SLM vocab size: {len(slm_vocab)}")
     print(f"Vocabulary intersection size: {len(intersect_tokens)} tokens.")
 
-    # 为交集创建对齐的 token ID 列表
+    # Create aligned token ID lists for the intersection
     llm_ids_list = []
     slm_ids_list = []
-    # 排序以保证每次运行的映射都是确定的
+    # Sort to ensure the mapping is deterministic across runs
     for token in sorted(list(intersect_tokens)):
         llm_ids_list.append(llm_vocab[token])
         slm_ids_list.append(slm_vocab[token])
 
-    # 转换为张量
+    # Convert to tensors
     llm_intersect_ids = torch.tensor(llm_ids_list, dtype=torch.long, device=device)
     slm_intersect_ids = torch.tensor(slm_ids_list, dtype=torch.long, device=device)
     
     return llm_intersect_ids, slm_intersect_ids
 
 def make_top_5_prompt(query, top_5):
+    """Creates a prompt with the top 5 documents as context."""
     prompt_parts = ["The following are five titles with their abstracts."]
     items_to_use = top_5[:5]
     for i, item in enumerate(items_to_use):
@@ -114,15 +115,15 @@ def make_top_5_prompt(query, top_5):
     prompt_parts.append(query)
     return "\n".join(prompt_parts)
 
-# +++++++++++++++++++++++++++++++++++++++++++++++++++++
-# +++ 重大修改：generate_response 函数以使用词表交集 +++
-# +++++++++++++++++++++++++++++++++++++++++++++++++++++
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ Major Change: generate_response function updated to use vocabulary intersection +++
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer, llm_intersect_ids, slm_intersect_ids, args):
-    """处理单个item的生成"""
+    """Handles the generation for a single item."""
     messages_wo = [{"role": "system", "content": "You are a helpful assistant."},
-                 {"role": "user", "content": query_wo}]
+                   {"role": "user", "content": query_wo}]
     messages_with = [{"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": query_with}]
+                     {"role": "user", "content": query_with}]
 
     llm_text_wo = LLM_tokenizer.apply_chat_template(
         messages_wo, tokenize=False, add_generation_prompt=True)
@@ -141,7 +142,7 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
     slm_seq_with = slm_inputs_with.input_ids
 
     costeer_optimizer = CosteerGenerator(T=args.T, alpha=args.alpha, beta=args.beta, 
-                                      player_lambda=args.player_lambda, eta=args.eta)
+                                         player_lambda=args.player_lambda, eta=args.eta)
     
     for _ in range(max_new_tokens):
         with torch.no_grad():
@@ -150,48 +151,48 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
             llm_logits_native = LLM_model(llm_seq).logits[:, -1, :]
 
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # +++ 新增：强制停止机制 (Forced Stop Mechanism) +++
+        # +++ New: Forced Stop Mechanism +++
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # 检查原始 SLM with context 输出 eos_token 的概率是否超过阈值
-        # 这可以防止 Costeer 优化过程稀释掉 SLM with context 强烈的停止信号
+        # Check if the probability of the original SLM with context outputting eos_token exceeds the threshold.
+        # This prevents the Costeer optimization process from diluting a strong stop signal from the SLM with context.
         
-        # 将原始 SLM with context logits 转换为概率分布
+        # Convert the original SLM with context logits to a probability distribution
         llm_probs = torch.softmax(llm_logits_native, dim=-1)
         llm_eos_prob = llm_probs[0, LLM_tokenizer.eos_token_id]
         
-        # 如果概率大于设定的阈值（例如 0.5），则强制中断循环
-        # 这个阈值可以根据需要调整，甚至可以作为一个新的超参数
+        # If the probability is greater than the set threshold (e.g., 0.5), force stop the loop.
+        # This threshold can be adjusted as needed, or even passed as a new hyperparameter.
         if llm_eos_prob.item() > args.eos_force_threshold:
             print(f"\nINFO: LLM EOS probability ({llm_eos_prob.item():.4f}) exceeded threshold ({args.eos_force_threshold}). Forcing generation to stop.")
             break
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # +++                       修改结束                         +++
+        # +++                   End of Changes                     +++
         # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-        # --- 词表对齐 (Intersection) ---
+        # --- Vocabulary Alignment (Intersection) ---
         intersect_logits_llm = llm_logits_native.index_select(-1, llm_intersect_ids)
         intersect_logits_slm_wo = slm_wo_logits_native.index_select(-1, slm_intersect_ids)
         intersect_logits_slm_with = slm_with_logits_native.index_select(-1, slm_intersect_ids)
         
-        # 执行Costeer优化
+        # Perform Costeer optimization
         combined_logits = costeer_optimizer.optimize_policy(
             intersect_logits_llm, intersect_logits_slm_wo, intersect_logits_slm_with
         )
         
-        # 从共同词表空间中选择下一个 token 的 *索引*
+        # Select the *index* of the next token from the common vocabulary space
         probs = F.softmax(combined_logits, dim=-1)
         next_token_idx = torch.argmax(probs, dim=-1)
         
-        # --- Token反向映射 ---
+        # --- Token Reverse Mapping ---
         next_llm_token = llm_intersect_ids[next_token_idx]
         next_slm_token = slm_intersect_ids[next_token_idx]
         
-        # 更新序列
+        # Update sequences
         llm_seq = torch.cat((llm_seq, next_llm_token.view(1, 1)), dim=1)
         slm_seq_wo = torch.cat((slm_seq_wo, next_slm_token.view(1, 1)), dim=1)
         slm_seq_with = torch.cat((slm_seq_with, next_slm_token.view(1, 1)), dim=1)
 
-        # 保留原有的停止条件作为备用
+        # Keep the original stopping condition as a fallback.
         if next_llm_token.item() == LLM_tokenizer.eos_token_id:
             break
 
@@ -201,54 +202,53 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
     )
     
     return generated_text
-    
-    f
 
 def read_json_and_extract_info(args):
+    """Reads input, generates responses, and writes to output, with resume capability."""
     LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer = load_models(args)
     
-    # +++ 修改：创建交集映射表 +++
+    # +++ Change: Create intersection map +++
     llm_intersect_ids, slm_intersect_ids = create_vocab_intersection_map(LLM_tokenizer, SLM_tokenizer, LLM_model.device)
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # +++ 修改：使用 'input' 作为唯一标识来实现断点续跑 +++
+    # +++ Change: Use 'input' as a unique ID to resume from a checkpoint +++
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     processed_inputs = set()
-    # 检查输出文件是否存在，如果存在则加载已处理的 'input' 内容
+    # Check if output file exists, if so, load already processed 'input' content
     if os.path.exists(args.output_file):
-        print(f"发现已存在的输出文件: {args.output_file}。正在加载已处理的 'input'...")
+        print(f"Found existing output file: {args.output_file}. Loading processed 'input' entries...")
         with open(args.output_file, 'r', encoding='utf-8') as f_out:
             for line in f_out:
                 try:
                     processed_item = json.loads(line)
-                    # 将 'input' 字段的内容加入 set 中
+                    # Add the 'input' field content to the set
                     if 'input' in processed_item:
                         processed_inputs.add(processed_item['input'])
                 except json.JSONDecodeError:
-                    print(f"警告：输出文件中有一行无法解析，已跳过: {line.strip()}")
-        print(f"加载完成，共找到 {len(processed_inputs)} 个已处理的 'input'。现在开始继续任务...")
+                    print(f"Warning: A line in the output file could not be parsed and was skipped: {line.strip()}")
+        print(f"Loading complete. Found {len(processed_inputs)} processed 'input' entries. Resuming task...")
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # +++                     修改结束                       +++
+    # +++                   End of Changes                     +++
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     with open(args.input_file, 'r', encoding='utf-8') as file:
         for line in file:
             item = json.loads(line)
-            id = item.get('id')
-            input = item.get('input')
-            if input in processed_inputs:
-                # 为了日志整洁，可以只打印 input 的前缀
-                print(f"Input: '{input[:70]}...' 已处理，跳过。")
-                continue # 跳到下一个循环
+            item_id = item.get('id')
+            user_input = item.get('input')
+            if user_input in processed_inputs:
+                # For cleaner logs, print only the input prefix
+                print(f"Input: '{user_input[:70]}...' already processed, skipping.")
+                continue # Skip to the next iteration
             top_5 = item.get('top_5')
-            prompt_wo_user_profile = input
-            prompt_with_user_profile = make_top_5_prompt(input, top_5)
+            prompt_wo_user_profile = user_input
+            prompt_with_user_profile = make_top_5_prompt(user_input, top_5)
             
             response = generate_response(prompt_wo_user_profile, prompt_with_user_profile, 
-                                        LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer,
-                                        llm_intersect_ids, slm_intersect_ids, args) # 传递交集映射表
+                                           LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer,
+                                           llm_intersect_ids, slm_intersect_ids, args) # Pass the intersection map
             
             new_json = {
-                "id": id,
-                'input': input,
+                "id": item_id,
+                'input': user_input,
                 'response': response,
             }
             with open(args.output_file, 'a', encoding='utf-8') as output_file:
@@ -256,6 +256,7 @@ def read_json_and_extract_info(args):
                 output_file.write('\n')
 
 def parse_args():
+    """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Costeer Generator with hyperparameters")
     parser.add_argument("--T", type=int, default=20, help="Number of iterations")
     parser.add_argument("--alpha", type=float, default=2, help="Alpha parameter")
