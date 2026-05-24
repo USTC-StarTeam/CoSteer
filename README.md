@@ -1,12 +1,23 @@
 # CoSteer: Collaborative Decoding-Time Personalization via Local Delta Steering
 
-This repository contains the reviewer-facing implementation for CoSteer, a
-decoding-time framework where a remote large language model (LLM) is guided by a
-smaller local language model (SLM) that can access private user context.
+This repository contains the implementation of **CoSteer**, a decoding-time
+personalization method for collaborative cloud-edge generation. CoSteer keeps
+private user context on the local side: a small local language model (SLM)
+observes the private context and produces a context-induced delta signal, while a
+larger language model (LLM) generates the final response without directly seeing
+that private context.
 
-The release is intentionally lightweight. It includes the core generation code
-and small JSONL evaluation splits, but does not include generated model outputs,
-private API credentials, local model checkpoints, or cached experiment artifacts.
+At each decoding step, CoSteer compares the SLM distribution with and without
+the retrieved user context, then uses this local delta to steer the LLM's next
+token distribution. The repository also includes two tokenizer-mismatch variants
+for cross-architecture collaboration and an adaptive variant, AdaCoSteer, that
+skips local fusion when the LLM is already sufficiently confident.
+
+This public artifact is designed for paper review. It includes the core
+generation code and small JSONL evaluation splits so reviewers can inspect the
+method logic and run lightweight smoke tests. Generated model outputs,
+evaluation tables, local checkpoints, and cached experiment artifacts are not
+included.
 
 ## Repository Layout
 
@@ -37,9 +48,7 @@ pip install -r requirements.txt
 ```
 
 The scripts load Hugging Face models through `transformers`. If a model requires
-authentication, please authenticate through the standard Hugging Face workflow
-outside this repository. Do not place tokens, API keys, or private model paths in
-tracked files.
+authentication, please authenticate through the standard Hugging Face workflow.
 
 ## Data Format
 
@@ -49,9 +58,8 @@ Each JSONL row is one evaluation instance. The core fields are:
 - `output`: the reference response from the dataset.
 - `top_5`: retrieved in-context examples used as local private context.
 
-The three files under `datasets/` are the small reviewer-facing splits used by
-the example scripts. They are safe to keep in git. Generated generations and
-evaluation outputs should be written under `outputs/`, which is ignored.
+The three files under `datasets/` are small reviewer-facing splits used by the
+example scripts. They follow the same JSONL pattern as the full experiments.
 
 ## Running CoSteer
 
@@ -101,25 +109,26 @@ python codes/abstract_adacosteer.py \
   --limit 1
 ```
 
-The default hyperparameters follow the settings used in the paper experiments:
+The default hyperparameters match the settings used in the paper experiments:
 `T=20`, `alpha=2`, `beta=1`, `player_lambda=2`, and `eta=10`.
 
-## Safety and Reproducibility Notes
+## Release Scope
 
-- Generated outputs, evaluation results, logs, local checkpoints, caches, and API
-  credentials are ignored by `.gitignore`.
-- Use environment variables or external credential stores for private tokens.
-- Keep private full-scale generations outside the repository, or under ignored
-  directories such as `outputs/`, `results/`, or `logs/`.
-- The public scripts focus on the abstract-generation setting. The review and
-  writing datasets use the same JSONL pattern, but may require task-specific
-  prompt formatting if you want to reproduce the full paper table.
+- The repository contains source code and small JSONL splits for inspection and
+  smoke testing.
+- Generated responses and evaluation outputs are not included in the public
+  artifact.
+- The scripts write generated responses to `outputs/` by default. This keeps
+  source files and released data unchanged during local runs.
+- The example scripts focus on the abstract-generation setting. The review and
+  writing splits are included for reference and use the same JSONL structure, but
+  full-table reproduction may require task-specific prompt formatting.
 
-Before sharing the repository, run:
+For a lightweight sanity check that does not load model weights, run:
 
 ```bash
 python scripts/validate_release.py
 ```
 
-This performs a lightweight syntax, dataset-schema, and sensitive-file check
-without loading any model weights.
+The check validates Python syntax, JSONL schemas, and the public repository
+layout.
