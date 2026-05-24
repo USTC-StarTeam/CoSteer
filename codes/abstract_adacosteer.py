@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import json
 import argparse
 import math
+import os
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.generation.logits_process import (
@@ -128,7 +129,7 @@ def load_models(args):
 def make_top_5_prompt(query, top_5):
     """Create a prompt with context"""
     prompt_parts = ["The following are five titles with their abstracts."]
-    items_to_use = top_5[:5]
+    items_to_use = (top_5 or [])[:5]
     for i, item in enumerate(items_to_use):
         prompt_parts.append(f"Title[{i+1}]: {item['title']}\nAbstract[{i+1}]: {item['abstract']}\n")
     prompt_parts.append("Now it's your turn\n")
@@ -277,9 +278,12 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
 
 def read_json_and_extract_info(args):
     LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer, llm_map, slm_map = load_models(args)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     with open(args.input_file, 'r', encoding='utf-8') as file:
-        for line in file:
+        for idx, line in enumerate(file):
+            if args.limit is not None and idx >= args.limit:
+                break
             item = json.loads(line)
             id = item.get('id')
             input_query = item.get('input')
@@ -320,10 +324,11 @@ def parse_args():
 
     # --- I/O and Model Paths ---
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Maximum number of new tokens to generate")
-    parser.add_argument("--input_file", type=str, default="datasets/longlamp/abstract.jsonl", help="Path to input JSONL file")
-    parser.add_argument("--output_dir", type=str, default="results/adacosteer", help="Directory for output files")
-    parser.add_argument("--llm_model_name", type=str, default="models/Qwen2.5-7B-Instruct", help="Path to LLM model")
-    parser.add_argument("--slm_model_name", type=str, default="models/Qwen2.5-1.5B-Instruct", help="Path to SLM model")
+    parser.add_argument("--input_file", type=str, default="datasets/abstract.jsonl", help="Path to input JSONL file")
+    parser.add_argument("--output_dir", type=str, default="outputs/adacosteer", help="Directory for generated output files")
+    parser.add_argument("--llm_model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Path or name of the LLM model")
+    parser.add_argument("--slm_model_name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="Path or name of the SLM model")
+    parser.add_argument("--limit", type=int, default=None, help="Optional maximum number of JSONL rows to process")
 
     args = parser.parse_args()
 

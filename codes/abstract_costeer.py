@@ -3,6 +3,7 @@ import torch
 import json
 import torch.nn.functional as F
 import argparse
+import os
 
 class CosteerGenerator:
     def __init__(self, T, alpha, beta, player_lambda, eta):
@@ -17,11 +18,11 @@ class CosteerGenerator:
         batch_size, vocab_size = llm_logits.shape
 
         # === Variable Initialization ===
-        log_player = torch.log(F.softmax(llm_logits, dim=-1))  # [batch, vocab]
-        log_ref = torch.log(F.softmax(llm_logits, dim=-1))     # [batch, vocab]
+        log_player = torch.log_softmax(llm_logits, dim=-1)  # [batch, vocab]
+        log_ref = torch.log_softmax(llm_logits, dim=-1)     # [batch, vocab]
         
-        slm_with_logits = torch.log(F.softmax(slm_with_logits, dim=-1))  # [batch, vocab]
-        slm_wo_logits = torch.log(F.softmax(slm_wo_logits, dim=-1))      # [batch, vocab]
+        slm_with_logits = torch.log_softmax(slm_with_logits, dim=-1)  # [batch, vocab]
+        slm_wo_logits = torch.log_softmax(slm_wo_logits, dim=-1)      # [batch, vocab]
         
         Q = torch.zeros((batch_size, self.iteration_num + 1, vocab_size), 
                         device=llm_logits.device)
@@ -78,7 +79,7 @@ def make_top_5_prompt(query, top_5):
     prompt_parts = ["The following are five titles with their abstracts."]
     
     # Only use up to 5 items
-    items_to_use = top_5[:5]
+    items_to_use = (top_5 or [])[:5]
     
     for i, item in enumerate(items_to_use):
         prompt_parts.append(f"Title[{i+1}]: {item['title']}\nAbstract[{i+1}]: {item['abstract']}\n")
@@ -127,8 +128,13 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
         with torch.no_grad():
             slm_wo_logits = SLM_model(slm_seq_wo).logits[:, -1, :]
             slm_with_logits = SLM_model(slm_seq_with).logits[:, -1, :]
-            # Align vocabulary size
-            llm_logits = LLM_model(llm_seq).logits[:, -1, :][:, :slm_with_logits.size(-1)]
+            llm_logits = LLM_model(llm_seq).logits[:, -1, :]
+
+        if llm_logits.size(-1) != slm_with_logits.size(-1):
+            raise ValueError(
+                "abstract_costeer.py assumes that the LLM and SLM share the same vocabulary. "
+                "Use abstract_costeer_map.py or abstract_costeer_byte.py for cross-tokenizer pairs."
+            )
         
         # Perform Costeer optimization
         combined_logits = costeer_optimizer.optimize_policy(
@@ -160,9 +166,12 @@ def generate_response(query_wo, query_with, LLM_model, SLM_model, LLM_tokenizer,
 def read_json_and_extract_info(args):
     """Reads the input file, generates responses, and writes to the output file."""
     LLM_model, SLM_model, LLM_tokenizer, SLM_tokenizer = load_models(args)
+    os.makedirs(args.output_dir, exist_ok=True)
     
     with open(args.input_file, 'r', encoding='utf-8') as file:
-        for line in file:
+        for idx, line in enumerate(file):
+            if args.limit is not None and idx >= args.limit:
+                break
             item = json.loads(line)
             item_id = item.get('id')
             user_input = item.get('input')
@@ -195,10 +204,11 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling parameter")
     parser.add_argument("--max_new_tokens", type=int, default=4096, help="Maximum number of new tokens to generate")
-    parser.add_argument("--input_file", type=str, default="datasets/longlamp/abstract.jsonl", help="Path to input JSONL file")
-    parser.add_argument("--output_dir", type=str, default="results", help="Directory for output files")
+    parser.add_argument("--input_file", type=str, default="datasets/abstract.jsonl", help="Path to input JSONL file")
+    parser.add_argument("--output_dir", type=str, default="outputs/costeer", help="Directory for generated output files")
     parser.add_argument("--llm_model_name", type=str, default="Qwen/Qwen2-7B-Instruct", help="Path or name of the LLM model")
     parser.add_argument("--slm_model_name", type=str, default="Qwen/Qwen2-1.5B-Instruct", help="Path or name of the SLM model")
+    parser.add_argument("--limit", type=int, default=None, help="Optional maximum number of JSONL rows to process")
     
     args = parser.parse_args()
     

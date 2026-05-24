@@ -1,0 +1,44 @@
+# Python and editor artifacts
+__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+.vscode/
+
+# Local environments
+.venv/
+venv/
+env/
+.python-version
+
+# Credentials and API configuration
+.env
+.env.*
+!.env.example
+*api_key*
+*apikey*
+*secret*
+*token*
+*.pem
+*.key
+
+# Local model weights and caches
+models/
+checkpoints/
+cache/
+.cache/
+huggingface/
+wandb/
+
+# Generated outputs and logs
+outputs/
+results/
+rebuttal/
+logs/
+runs/
+*.log
+
+# Generated JSONL files are ignored by default.
+# The curated reviewer-facing dataset splits are explicitly kept.
+*.jsonl
+!datasets/*.jsonl

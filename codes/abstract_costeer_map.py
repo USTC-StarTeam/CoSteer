@@ -108,7 +108,7 @@ def create_vocab_intersection_map(llm_tokenizer, slm_tokenizer, device):
 def make_top_5_prompt(query, top_5):
     """Creates a prompt with the top 5 documents as context."""
     prompt_parts = ["The following are five titles with their abstracts."]
-    items_to_use = top_5[:5]
+    items_to_use = (top_5 or [])[:5]
     for i, item in enumerate(items_to_use):
         prompt_parts.append(f"Title[{i+1}]: {item['title']}\nAbstract[{i+1}]: {item['abstract']}\n")
     prompt_parts.append("Now it's your turn\n")
@@ -230,7 +230,9 @@ def read_json_and_extract_info(args):
     # +++                   End of Changes                     +++
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     with open(args.input_file, 'r', encoding='utf-8') as file:
-        for line in file:
+        for idx, line in enumerate(file):
+            if args.limit is not None and idx >= args.limit:
+                break
             item = json.loads(line)
             item_id = item.get('id')
             user_input = item.get('input')
@@ -266,11 +268,12 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling parameter")
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Maximum number of new tokens to generate")
-    parser.add_argument("--input_file", type=str, default="datasets/longlamp/abstract.jsonl", help="Path to input JSONL file")
-    parser.add_argument("--output_dir", type=str, default="rebuttal/mix", help="Directory for output files")
-    parser.add_argument("--llm_model_name", type=str, default="models/Llama3.1-8B-Instruct", help="Path to LLM model")
-    parser.add_argument("--slm_model_name", type=str, default="models/Qwen2.5-1.5B-Instruct", help="Path to SLM model")
+    parser.add_argument("--input_file", type=str, default="datasets/abstract.jsonl", help="Path to input JSONL file")
+    parser.add_argument("--output_dir", type=str, default="outputs/costeer_map", help="Directory for generated output files")
+    parser.add_argument("--llm_model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Path or name of the LLM model")
+    parser.add_argument("--slm_model_name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="Path or name of the SLM model")
     parser.add_argument("--eos_force_threshold", type=float, default=0.5, help="Threshold for forcing generation to stop")
+    parser.add_argument("--limit", type=int, default=None, help="Optional maximum number of JSONL rows to process")
     
     args = parser.parse_args()
     
