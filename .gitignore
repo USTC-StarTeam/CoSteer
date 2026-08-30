@@ -1,6 +1,9 @@
 # Python and editor artifacts
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
 .DS_Store
 .idea/
 .vscode/
@@ -15,10 +18,8 @@ env/
 .env
 .env.*
 !.env.example
-*api_key*
-*apikey*
-*secret*
-*token*
+credentials.json
+secrets.json
 *.pem
 *.key
 
@@ -29,6 +30,13 @@ cache/
 .cache/
 huggingface/
 wandb/
+*.bin
+*.ckpt
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.safetensors
 
 # Generated outputs and logs
 outputs/
